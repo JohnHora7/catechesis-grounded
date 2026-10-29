@@ -88,3 +88,14 @@ resolved.
 - [ ] Tier 2/3 LLM generation layer
 - [ ] Telegram bot interface
 - [ ] Licensing resolution for commercial launch
+
+## Update 2026-10-29
+- Full Catechism of the Catholic Church ingested: 2863 of 2865 numbered
+  paragraphs (2 edge-case parsing gaps: CCC 2077, 2436 — TODO patch later).
+  Source: vatican.va IntraText pages (374 pages, automated fetch+parse).
+- Verified on multiple real queries (purgatory, marriage/divorce) — correct
+  tiering, relevant results, honest empty-result on true gaps.
+- Corpus now 2865 total chunks (2863 magisterium + 2 earlier scripture/doctor
+  samples). Retrieval still <100ms in pure Python TF-IDF at this scale.
+- Next: Douay-Rheims Bible (large — ~1300+ chapters, needs a prioritized
+  subset or a separate multi-session batch job), more Summa, Church Fathers.
