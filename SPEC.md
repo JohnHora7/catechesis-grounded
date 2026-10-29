@@ -99,3 +99,30 @@ resolved.
   samples). Retrieval still <100ms in pure Python TF-IDF at this scale.
 - Next: Douay-Rheims Bible (large — ~1300+ chapters, needs a prioritized
   subset or a separate multi-session batch job), more Summa, Church Fathers.
+
+## Update 2026-10-29 (cont'd) — Douay-Rheims Bible + retrieval fix
+- Full Douay-Rheims Bible ingested: 35,780 verses, Genesis 1:1 through
+  Apocalypse 22:21, parsed from Project Gutenberg ebook #1581 (single
+  clean source file, not 1300+ individual chapter pages). Verified against
+  known verses (John 3:16, Genesis 1:27, 2 Mac 12:46).
+- Corpus now 38,645 total chunks (35,780 scripture + 2,863 magisterium + 2
+  doctor samples).
+- FOUND AND FIXED a real retrieval bug: raw TF-IDF term-frequency sums
+  favored long documents — a Catechism paragraph discussing a commandment
+  outscored the one-sentence Bible verse stating it by 35x, silently
+  burying Scripture under commentary (exactly what the tier design forbids).
+  v0.2 (cosine-normalized TF-IDF) overcorrected the other way, favoring
+  very short documents with one incidental keyword match. v0.3 (current)
+  uses BM25 (k1=1.5, b=0.75, standard defaults) — the standard solution to
+  this exact long-vs-short tradeoff. Verified Matthew 19:19 now correctly
+  leads on "love your neighbor as yourself" instead of being invisible.
+- Also switched to per-tier top-k retrieval (rank + cut each authority
+  tier independently) so one tier's volume can never crowd out another's
+  best matches, regardless of scoring method.
+- KNOWN REMAINING LIMITATION: pure keyword matching can't distinguish a
+  specific concept ("prayer for the dead") from a common word used in
+  unrelated contexts ("the dead" in narrative verses) — e.g. "purgatory"
+  queries still pull some irrelevant "dead"-adjacent verses. This is the
+  real ceiling of BM25/TF-IDF, not a bug; the documented fix is swapping
+  in semantic embeddings (sentence-transformers, still free/local) when
+  this starts actually hurting answer quality. Not urgent yet.

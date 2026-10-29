@@ -1,11 +1,26 @@
 #!/usr/bin/env python3
 """
-Grounded Catechesis retrieval engine (v0 — pure stdlib, no embedding API).
+Grounded Catechesis retrieval engine (v0.3 — pure stdlib, BM25).
 
-Deterministic keyword/TF-IDF scoring on purpose: a transparent, auditable
-retrieval method fits a product whose entire pitch is "no hidden AI
-interpretation." Swap in embeddings later for better recall without
-touching the tiering/output logic below.
+History of fixes found in testing (kept here so no one "fixes" it back):
+- v0.1: raw TF-IDF term-frequency sums. Bug: favored LONG documents — a
+  Catechism paragraph discussing a commandment outscored (35x) the actual
+  one-sentence Bible verse stating it, silently burying Scripture under
+  commentary on it.
+- v0.2: switched to cosine-normalized TF-IDF + per-tier top-k. Overcorrected:
+  cosine normalization over-rewards very SHORT documents with a single
+  incidental keyword match (e.g. "let the dead bury their dead" outscored
+  genuine purgatory passages on a "prayer for the dead" query, just because
+  it's short and contains "dead").
+- v0.3 (current): BM25 — saturating term frequency + tunable length
+  normalization (k1=1.5, b=0.75, the standard defaults). This is the actual
+  standard solution to exactly this long-vs-short tradeoff (same algorithm
+  Elasticsearch/Lucene use for keyword search). Verified against all three
+  known problem queries before shipping (see project notes).
+
+Per-tier retrieval is kept regardless of scoring method: each authority
+tier is ranked and cut independently, so no tier's volume can crowd out
+another's best matches.
 """
 import json
 import math
@@ -31,7 +46,10 @@ TIER_LABELS = {
 STOPWORDS = set("a an the of to in is are was were be been being and or "
                 "but if on at by for with from this that these those as "
                 "it its into about what does do did their his her they "
-                "he she we you i".split())
+                "he she we you i shall thou thy".split())
+
+BM25_K1 = 1.5
+BM25_B = 0.75
 
 
 def tokenize(text):
@@ -43,35 +61,55 @@ def load_corpus():
 
 
 def build_index(chunks):
-    """Simple TF-IDF, pure stdlib."""
     docs_tokens = [tokenize(c["text"]) for c in chunks]
+    doc_len = [len(t) for t in docs_tokens]
+    avgdl = sum(doc_len) / len(doc_len) if doc_len else 1.0
+
     df = Counter()
     for toks in docs_tokens:
         for w in set(toks):
             df[w] += 1
     n_docs = len(chunks)
-    idf = {w: math.log((n_docs + 1) / (freq + 1)) + 1 for w, freq in df.items()}
-    return docs_tokens, idf
+    # BM25 idf (standard formulation, floored at a small positive value)
+    idf = {w: max(0.01, math.log((n_docs - freq + 0.5) / (freq + 0.5) + 1))
+           for w, freq in df.items()}
+
+    doc_tfs = [Counter(toks) for toks in docs_tokens]
+    return doc_tfs, doc_len, avgdl, idf
 
 
-def score(query, docs_tokens, idf):
-    q_tokens = tokenize(query)
+def score(query, doc_tfs, doc_len, avgdl, idf):
+    q_tokens = set(tokenize(query))
     scores = []
-    for toks in docs_tokens:
-        tf = Counter(toks)
-        s = sum(tf.get(w, 0) * idf.get(w, 0) for w in q_tokens)
+    for tf, dl in zip(doc_tfs, doc_len):
+        s = 0.0
+        for w in q_tokens:
+            f = tf.get(w, 0)
+            if f == 0:
+                continue
+            num = f * (BM25_K1 + 1)
+            den = f + BM25_K1 * (1 - BM25_B + BM25_B * dl / avgdl)
+            s += idf.get(w, 0) * (num / den)
         scores.append(s)
     return scores
 
 
-def search(query, min_score=0.01, top_k=10):
+def search(query, min_score=0.5, per_tier_k=5):
+    """Per-tier retrieval: rank within each authority tier independently
+    so no single tier's volume can crowd out another's best matches."""
     chunks = load_corpus()
-    docs_tokens, idf = build_index(chunks)
-    scores = score(query, docs_tokens, idf)
-    ranked = sorted(zip(chunks, scores), key=lambda cs: -cs[1])
-    hits = [c for c, s in ranked if s >= min_score][:top_k]
-    # Group/order by authority tier (doctrinal weight), not raw score
-    hits.sort(key=lambda c: TIER_ORDER.index(c["authority_tier"]))
+    doc_tfs, doc_len, avgdl, idf = build_index(chunks)
+    scores = score(query, doc_tfs, doc_len, avgdl, idf)
+
+    by_tier = {t: [] for t in TIER_ORDER}
+    for c, s in zip(chunks, scores):
+        if s >= min_score:
+            by_tier[c["authority_tier"]].append((c, s))
+
+    hits = []
+    for tier in TIER_ORDER:
+        ranked = sorted(by_tier[tier], key=lambda cs: -cs[1])[:per_tier_k]
+        hits.extend(c for c, s in ranked)
     return hits
 
 
